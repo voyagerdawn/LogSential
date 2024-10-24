@@ -37,22 +37,35 @@ class DendriticCell:
         self.collected_antigens = []
 
     def collect_signals(self, process_info):
+        incremented_danger = False
+
         if "keylogger" in process_info['name'].lower():
             self.pamp_signals += 1
+            print(f"Keylogger detected: {process_info['name']}")
         elif "suspicious" in process_info['behavior']:
             self.danger_signals += 1
+            incremented_danger = True
+            print(f"Suspicious behavior detected: {process_info['name']}")
         else:
             self.safe_signals += 1
+            print(f"Safe signal collected from: {process_info['name']}")
+
         self.collected_antigens.append(process_info)
+        print(f"Current counts - PAMP: {self.pamp_signals}, Danger: {self.danger_signals}, Safe: {self.safe_signals}")
+
+        return incremented_danger
 
     def is_mature(self):
-        return self.pamp_signals > self.safe_signals and self.danger_signals > 1
+        return self.danger_signals >= 1 
+        
 
     def classify(self):
         if self.is_mature():
+            print("Classifying as: Suspicious Process (Mature DC)")
             return "Suspicious Process (Mature DC)"
         else:
-            return "safe Process (Semi-mature DC)"
+            print("Classifying as: Safe Process (Semi-Mature DC)")
+            return "Safe Process (Semi-mature DC)"
 
 # Thread for monitoring
 class ProcessMonitor (QThread):
@@ -60,14 +73,65 @@ class ProcessMonitor (QThread):
 
     def run(self):
         while True:
-            for proc in psutil.process_iter(['pid', 'name']):
+            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'cmdline']):
                 try:
-                    process_info = {'name': proc.info['name'], 'behavior': 'normal'}
+                    process_info = {
+                        'name': proc.info['name'], 
+                        'behavior': 'normal', 
+                        'cmdline': proc.info['cmdline']
+                    }
+
+                    # Check for high resource usage
+                    if proc.info['cpu_percent'] > 50 or proc.info['memory_percent'] > 50:
+                        process_info['behavior'] = 'High resource usage'
+                
+                    if "python" in proc.info['name'].lower():
+                        # Inspect command line for potential keylogger script
+                        cmdline_str = ' '.join(proc.info['cmdline']) if isinstance(proc.info['cmdline'], list) else ''
+                        if "keylog" in cmdline_str.lower() or "logger" in cmdline_str.lower():
+                            process_info['behavior'] = 'suspicious'
+
+                    # Check if the process name contains "keylog"
+                    if "keylog" in proc.info['name'].lower():
+                        process_info['behavior'] = 'suspicious'
+                
+                    # Ensure cmdline is a list and handle None
+                    cmdline_str = ' '.join(process_info['cmdline']) if isinstance(process_info['cmdline'], list) else ''
+                
+                    # Check for suspicious keywords in command line
+                    if any(keyword in cmdline_str.lower() for keyword in ["keylog", "logger", "capture", "snoop", "monitor"]):
+                        process_info['behavior'] = 'suspicious'
+                
+                    # Emit the process information for further processing
                     self.process_signal.emit(process_info)
+
+                    # Sleep for a brief period to prevent excessive CPU usage
                     time.sleep(1)
+
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    # Handle exceptions for processes that no longer exist or cannot be accessed
                     pass
-                      
+
+
+# File Activity Monitoring                      
+class FileActivityMonitor(QThread):
+    file_activity_signal = pyqtSignal(str)  # Signal to send detected activity
+
+    def detect_suspicious_file_activity(self):
+        
+        for proc in psutil.process_iter(['pid', 'name', 'io_counters']):
+            try:
+                io = proc.info['io_counters']
+                if io and io.write_count > 1000:  # Example threshold for suspicious writes
+                    self.file_activity_signal.emit(f"Suspicious process writing a lot of data: {proc.info['name']} (PID: {proc.info['pid']})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+
+    def run(self):
+        while True:
+            self.detect_suspicious_file_activity()
+            time.sleep(5)
+
 #Main UI an fucntionalities
 class Ui_MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -253,12 +317,16 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.displayFrame.setCurrentIndex(1)
 
     def run_dca_monitoring(self, process_info):
-        print(f"Received process_info: {process_info}")  # Debugging line
+        print(f"Received process_info: {process_info}")  
         if isinstance(process_info, dict):
-            self.dca.collect_signals(process_info)
+            incremented_danger = self.dca.collect_signals(process_info)
             result = self.dca.classify()
-            log_output = f"Process {process_info['name']} classified as: {result}"
-            self.update_logs(log_output)
+
+            if incremented_danger:
+                log_output = f"Process {process_info['name']} classified as: {result}"
+                self.update_logs(log_output)
+            else:
+                self.update_logs("Scanning Processes...")
         else:
             print(f"Unexpected type: {type(process_info)}")
 
@@ -266,6 +334,9 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         """
         This method updates the monitoring log with new messages.
         """
+        if message == "Scanning Processes...":
+            if self.monitoringLog.toPlainText().endswith("Scanning Processes..."):
+                return
         self.monitoringLog.append(message)
 
 if __name__ == "__main__":
