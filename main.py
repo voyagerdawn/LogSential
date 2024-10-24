@@ -1,7 +1,9 @@
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import QThread, pyqtSignal
 import psutil
+import time
 
+# Deep Scan Button UI
 class DeepScanFrame(QtWidgets.QFrame):
         def __init__(self, parent=None):
                 super().__init__(parent)
@@ -19,13 +21,14 @@ class DeepScanFrame(QtWidgets.QFrame):
 
         def enterEvent(self, event):
                 self.setStyleSheet("background-color: #002b5c;")
-                self.kernelScan.setStyleSheet("color: white; cursor: pointer;")
+                self.kernelScan.setStyleSheet("color: white;")
                 super().enterEvent(event)
         def leaveEvent(self, event):
                 self.setStyleSheet("background-color: #f5f5f5;")  # Original frame color
                 self.kernelScan.setStyleSheet("background-color: #f5f5f5; color: #002b5c;")  # Original button color
                 super().leaveEvent(event)
 
+# DCA Algo
 class DendriticCell:
     def __init__(self):
         self.pamp_signals = 0
@@ -34,10 +37,9 @@ class DendriticCell:
         self.collected_antigens = []
 
     def collect_signals(self, process_info):
-        # Dummy implementation of signal collection based on process info
         if "keylogger" in process_info['name'].lower():
             self.pamp_signals += 1
-        if "suspicious" in process_info['behavior']:
+        elif "suspicious" in process_info['behavior']:
             self.danger_signals += 1
         else:
             self.safe_signals += 1
@@ -48,15 +50,32 @@ class DendriticCell:
 
     def classify(self):
         if self.is_mature():
-            return "Mature DC - Suspicious"
+            return "Suspicious Process (Mature DC)"
         else:
-            return "Semi-mature DC - Safe"
+            return "safe Process (Semi-mature DC)"
 
+# Thread for monitoring
+class ProcessMonitor (QThread):
+    process_signal = pyqtSignal(dict)
 
+    def run(self):
+        while True:
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    process_info = {'name': proc.info['name'], 'behavior': 'normal'}
+                    self.process_signal.emit(process_info)
+                    time.sleep(1)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                      
+#Main UI an fucntionalities
 class Ui_MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.dca = DendriticCell()
+        self.process_monitor = ProcessMonitor()
+        self.process_monitor.process_signal.connect(self.run_dca_monitoring)
+        self.process_monitor.start()
 
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
@@ -179,8 +198,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.monitorButton.setIconSize(QtCore.QSize(50, 50))
         self.monitorButton.setObjectName("monitorButton")
         self.monitorButton.clicked.connect(self.showPage1)
-        self.monitorButton.clicked.connect(self.run_dca_monitoring)
-
+        
         self.defendButton = QtWidgets.QPushButton(parent=self.navFrame)
         self.defendButton.setGeometry(QtCore.QRect(270, -13, 93, 101))
         self.defendButton.setStyleSheet("""
@@ -234,27 +252,15 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
     def showPage2(self):
         self.displayFrame.setCurrentIndex(1)
 
-    def run_dca_monitoring(self):
-        """Run the DCA algorithm when the monitor button is clicked"""
-        processes = [
-            {"name": "System.exe", "behavior": "normal"},
-            {"name": "Keylogger123.exe", "behavior": "suspicious"},
-            {"name": "Explorer.exe", "behavior": "normal"},
-        ]
-        self.update_logs("Monitoring started...")
-
-        # Simulating the detection of suspicious processes
-        suspicious_process = "Suspicious keylogger process detected!"
-        self.update_logs(suspicious_process)
-
-        log_output = ""
-        for process in processes:
-            self.dca.collect_signals(process)
+    def run_dca_monitoring(self, process_info):
+        print(f"Received process_info: {process_info}")  # Debugging line
+        if isinstance(process_info, dict):
+            self.dca.collect_signals(process_info)
             result = self.dca.classify()
-            log_output += f"Process {process['name']} classified as: {result}\n"
-
-        # Display the classification results in the monitoring log label
-        self.monitoringLog.setText(log_output)
+            log_output = f"Process {process_info['name']} classified as: {result}"
+            self.update_logs(log_output)
+        else:
+            print(f"Unexpected type: {type(process_info)}")
 
     def update_logs(self, message):
         """
