@@ -1,4 +1,4 @@
-Current Functionality:<br><br>
+Current Functionality:<br>
 Sample DCA process scanning <br>
 Buttons: Deep Scan (Dynamic Taint Analysis for Kernel Scan)<br> 
 Monitor Button (Forgot)<br>  
